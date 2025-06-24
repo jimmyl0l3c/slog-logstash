@@ -10,6 +10,17 @@ import (
 
 var _ net.Conn = (*ReconnectConn)(nil)
 
+// ReconnectConn wraps a net.Conn with reconnects, but it only supports writing.
+//
+// It attempts to dial connection using specified dialer function.
+// Dialer function is retried in case of failures until success or until maximum
+// number of attemps is reached (unlimited by default).
+//
+// In case any error occurs when writing to the underlying connection, the current
+// connection is closed and error is returned. A following write attempt dials
+// a new connection (with retries).
+//
+// The connection is safe for concurrent use by multiple goroutines.
 type ReconnectConn struct {
 	dialer        func() (net.Conn, error) // Function to dial new connection
 	conn          net.Conn                 // Current active connection
@@ -23,6 +34,9 @@ type ReconnectConn struct {
 	closeOnce sync.Once   // Ensures close is only performed once
 }
 
+// NewReconnectConn creates a new ReconnectConn with given dialer function and retry delay.
+// The dialer function should dial a new net.Conn or return error in case of failure.
+// The returned connection is safe for concurrent use and will attempt to dial a new connection in case of failures.
 func NewReconnectConn(dialer func() (net.Conn, error), retryDelay time.Duration) *ReconnectConn {
 	return &ReconnectConn{
 		dialer: dialer,
@@ -33,7 +47,7 @@ func NewReconnectConn(dialer func() (net.Conn, error), retryDelay time.Duration)
 }
 
 // SetMaxRetries sets the maximum number of connection attempts.
-// You can make it unlimited by setting it to zero (the default).
+// To make it unlimited use the zero value (the default).
 func (rc *ReconnectConn) SetMaxRetries(maxRetries int) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
@@ -66,12 +80,18 @@ func (rc *ReconnectConn) ensureConn() error {
 	return err
 }
 
-// Implements net.Conn.
+// Read implements net.Conn. Always fails, because ReconnectConn is write-only.
 func (rc *ReconnectConn) Read(b []byte) (n int, err error) {
 	return -1, errors.New("ReconnectConn is a write only connection.")
 }
 
-// Implements net.Conn.
+// Write implements net.Conn. Dials a new underlying connection if there is none.
+// If the dialer function fails, retries until successfull or until the maximum
+// number of attempts is reached (the dialer error is returned).
+//
+// If a failure occurs during write to the underlying connection, the current
+// connection is closed and error is returned. A future call of Write dials
+// a new connection.
 func (rc *ReconnectConn) Write(b []byte) (n int, err error) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
@@ -89,7 +109,9 @@ func (rc *ReconnectConn) Write(b []byte) (n int, err error) {
 	return n, err
 }
 
-// Implements net.Conn.
+// Close implements net.Conn. Closes any active connection, cancels any currently
+// running dial attempts and prevents dialing new connections.
+// It is safe to call multiple times.
 func (rc *ReconnectConn) Close() error {
 	var err error
 	rc.closeOnce.Do(func() {
@@ -105,7 +127,9 @@ func (rc *ReconnectConn) Close() error {
 	return err
 }
 
-// Implements net.Conn.
+// LocalAddr implements net.Conn. Returns LocalAddr of the underlying conn.
+// If there is no connection active, new one is dialed and its LocalAddr is returned.
+// In case of failure, nil is returned.
 func (rc *ReconnectConn) LocalAddr() net.Addr {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
@@ -116,7 +140,9 @@ func (rc *ReconnectConn) LocalAddr() net.Addr {
 	return rc.conn.LocalAddr()
 }
 
-// Implements net.Conn.
+// RemoteAddr implements net.Conn. Returns RemoteAddr of the underlying conn.
+// If there is no connection active, new one is dialed and its RemoteAddr is returned.
+// In case of failure, nil is returned.
 func (rc *ReconnectConn) RemoteAddr() net.Addr {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
@@ -127,12 +153,12 @@ func (rc *ReconnectConn) RemoteAddr() net.Addr {
 	return rc.conn.RemoteAddr()
 }
 
-// Implements net.Conn.
+// SetDeadline implements net.Conn. Sets write deadline of the underlying conn.
 func (rc *ReconnectConn) SetDeadline(t time.Time) error {
 	return rc.SetWriteDeadline(t)
 }
 
-// Implements net.Conn.
+// SetReadDeadline implements net.Conn. Always fails, because ReconnectConn is write-only.
 func (rc *ReconnectConn) SetReadDeadline(t time.Time) error {
 	return errors.New("ReconnectConn is a write only connection.")
 }
