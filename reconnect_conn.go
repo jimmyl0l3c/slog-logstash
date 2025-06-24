@@ -8,32 +8,37 @@ import (
 	"time"
 )
 
+var _ net.Conn = (*ReconnectConn)(nil)
+
 type ReconnectConn struct {
-	dialer func() (net.Conn, error) // Function to dial new connection
-	conn   net.Conn                 // Current active connection
-	mu     sync.Mutex               // Mutex to protect conn
+	dialer        func() (net.Conn, error) // Function to dial new connection
+	conn          net.Conn                 // Current active connection
+	mu            sync.Mutex               // Mutex to protect conn
+	writeDeadline time.Time                // Deadline for future write calls
 
 	retryDelay time.Duration // Delay between reconnect attempts
-	maxRetries int           // Maximum number of reconnect attempts
+	maxRetries int           // Maximum number of reconnect attempts, infinite by default
 
 	closing   atomic.Bool // Indicates if the connection is closing/closed (atomic)
 	closeOnce sync.Once   // Ensures close is only performed once
 }
 
-func NewReconnectConn(dialer func() (net.Conn, error), retryDelay time.Duration, maxRetries int) (*ReconnectConn, error) {
-	rc := ReconnectConn{
+func NewReconnectConn(dialer func() (net.Conn, error), retryDelay time.Duration) *ReconnectConn {
+	return &ReconnectConn{
 		dialer: dialer,
 		mu:     sync.Mutex{},
 
 		retryDelay: retryDelay,
-		maxRetries: maxRetries,
 	}
+}
 
-	if err := rc.ensureConn(); err != nil {
-		return nil, err
-	}
+// SetMaxRetries sets the maximum number of connection attempts.
+// You can make it unlimited by setting it to zero (the default).
+func (rc *ReconnectConn) SetMaxRetries(maxRetries int) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 
-	return &rc, nil
+	rc.maxRetries = maxRetries
 }
 
 func (rc *ReconnectConn) ensureConn() error {
@@ -42,7 +47,7 @@ func (rc *ReconnectConn) ensureConn() error {
 	}
 
 	var err error
-	for i := 0; i < rc.maxRetries; i++ {
+	for i := 0; rc.maxRetries == 0 || i < rc.maxRetries; i++ {
 		if rc.closing.Load() {
 			return errors.New("Connection is closed.")
 		}
@@ -53,11 +58,12 @@ func (rc *ReconnectConn) ensureConn() error {
 
 		rc.conn, err = rc.dialer()
 		if err == nil {
+			_ = rc.conn.SetWriteDeadline(rc.writeDeadline)
 			return nil
 		}
 	}
 
-	return errors.New("Maximum number of retries exceeded.")
+	return err
 }
 
 // Implements net.Conn.
@@ -139,6 +145,8 @@ func (rc *ReconnectConn) SetReadDeadline(t time.Time) error {
 func (rc *ReconnectConn) SetWriteDeadline(t time.Time) error {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
+
+	rc.writeDeadline = t
 
 	if err := rc.ensureConn(); err != nil {
 		return err
