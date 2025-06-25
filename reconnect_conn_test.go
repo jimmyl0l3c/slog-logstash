@@ -54,6 +54,7 @@ func TestReconnectConnWriteFails(t *testing.T) {
 			called = true
 			return newFailingMockConn(), nil
 		}, 100*time.Millisecond)
+		defer conn.Close() //nolint:errcheck
 
 		n, err := conn.Write([]byte("aaaa"))
 
@@ -75,6 +76,39 @@ func TestReconnectConnWriteFails(t *testing.T) {
 	})
 }
 
+// Test concurrent Write from multiple goroutines
+func TestReconnectConnConcurrentWrite(t *testing.T) {
+	testWithTimeout(t, func(t *testing.T) {
+		conn := NewReconnectConn(func() (net.Conn, error) {
+			return newMockConn(), nil
+		}, 100*time.Millisecond)
+		defer conn.Close() //nolint:errcheck
+
+		var wg sync.WaitGroup
+		errCh := make(chan error, 10)
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				msg := []byte("msg")
+				for j := 0; j < 100; j++ {
+					if _, err := conn.Write(msg); err != nil {
+						errCh <- err
+						return
+					}
+				}
+			}(i)
+		}
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			if err != nil {
+				t.Errorf("%v", err)
+			}
+		}
+	})
+}
+
 // Test that if the conn runs out of retries, error is returned
 func TestReconnectConnRetryLimitedRetryFail(t *testing.T) {
 	testWithTimeout(t, func(t *testing.T) {
@@ -86,6 +120,7 @@ func TestReconnectConnRetryLimitedRetryFail(t *testing.T) {
 			}
 			return newMockConn(), nil
 		}, 100*time.Millisecond)
+		defer conn.Close() //nolint:errcheck
 		conn.SetMaxRetries(2)
 
 		n, err := conn.Write([]byte("aaaa"))
@@ -110,6 +145,7 @@ func TestReconnectConnRetryDialerLimitedRetry(t *testing.T) {
 			}
 			return newMockConn(), nil
 		}, 100*time.Millisecond)
+		defer conn.Close() //nolint:errcheck
 		conn.SetMaxRetries(3)
 
 		n, err := conn.Write([]byte("aaaa"))
@@ -134,6 +170,7 @@ func TestReconnectConnRetryDialer(t *testing.T) {
 			}
 			return newMockConn(), nil
 		}, 100*time.Millisecond)
+		defer conn.Close() //nolint:errcheck
 
 		n, err := conn.Write([]byte("aaaa"))
 
@@ -152,6 +189,7 @@ func TestReconnectConnReadFails(t *testing.T) {
 		conn := NewReconnectConn(func() (net.Conn, error) {
 			return newMockConn(), nil
 		}, 5*time.Second)
+		defer conn.Close() //nolint:errcheck
 
 		n, err := conn.Read(make([]byte, 10))
 

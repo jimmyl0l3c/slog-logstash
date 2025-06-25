@@ -63,7 +63,7 @@ func (rc *ReconnectConn) ensureConn() error {
 	var err error
 	for i := 0; rc.maxRetries == 0 || i < rc.maxRetries; i++ {
 		if rc.closing.Load() {
-			return errors.New("Connection is closed.")
+			return net.ErrClosed
 		}
 
 		if i > 0 {
